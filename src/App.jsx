@@ -8,7 +8,7 @@ import McqPage from './pages/McqPage';
 import ProgressPage from './pages/ProgressPage';
 
 function AppRoutes() {
-  const { user, loading } = useAuth();
+  const { loading } = useAuth();
 
   if (loading) {
     return (
@@ -22,10 +22,7 @@ function AppRoutes() {
     <BrowserRouter>
       <Navbar />
       <Routes>
-        <Route
-          path="/login"
-          element={user ? <Navigate to="/" replace /> : <LoginPage />}
-        />
+        <Route path="/login" element={<LoginPage />} />
         <Route path="/" element={<ProblemListPage />} />
         <Route path="/problem/:id" element={<ProblemPage />} />
         <Route path="/mcq" element={<McqPage />} />

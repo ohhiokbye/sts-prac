@@ -27,7 +27,13 @@ export default function LoginModal({
       }
       onClose();
     } catch (err) {
-      if (err?.code !== 'auth/popup-closed-by-user') {
+      if (err?.code === 'auth/unauthorized-domain') {
+        setError(
+          `Domain (${window.location.hostname}) is not authorized in Firebase Console → Authentication → Settings → Authorized domains.`
+        );
+      } else if (err?.code === 'auth/popup-blocked') {
+        setError('Popup was blocked by your browser. Please allow popups for this site.');
+      } else if (err?.code !== 'auth/popup-closed-by-user') {
         setError('Sign in failed. Please check your connection and try again.');
       }
     } finally {
@@ -53,7 +59,7 @@ export default function LoginModal({
           ✕
         </button>
 
-        <div className="modal-icon" aria-hidden="true">&lt;/&gt;</div>
+        <div className="modal-icon" aria-hidden="true">Oh</div>
         <h2 className="modal-title" id="modal-title">{title}</h2>
         <p className="modal-subtitle">{subtitle}</p>
 
@@ -63,6 +69,7 @@ export default function LoginModal({
               color: 'var(--difficulty-hard)',
               fontSize: 'var(--text-xs)',
               marginBottom: 12,
+              lineHeight: 1.4,
             }}
           >
             {error}
@@ -70,7 +77,7 @@ export default function LoginModal({
         )}
 
         <div style={{ marginTop: 16 }}>
-          <GoogleSignInButton onClick={handleSignIn} disabled={loading} />
+          <GoogleSignInButton onClick={handleSignIn} disabled={loading} loading={loading} />
         </div>
 
         {onGuestContinue && (

@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth';
-import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc, serverTimestamp, arrayUnion } from 'firebase/firestore';
 import { auth, db, googleProvider } from '../firebase/init';
 
 const AuthContext = createContext(null);
@@ -18,64 +18,79 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        // Sync user profile to Firestore
-        const userRef = doc(db, 'users', firebaseUser.uid);
-        const userSnap = await getDoc(userRef);
+      try {
+        if (firebaseUser) {
+          let userSolved = [];
 
-        const currentLocal = (() => {
+          // Try syncing with Firestore, but gracefully fall back to local storage if network or permissions fail
           try {
-            return JSON.parse(localStorage.getItem('stsprac_solved') || '[]');
-          } catch {
-            return [];
+            const userRef = doc(db, 'users', firebaseUser.uid);
+            const userSnap = await getDoc(userRef);
+
+            const currentLocal = (() => {
+              try {
+                return JSON.parse(localStorage.getItem('stsprac_solved') || '[]');
+              } catch {
+                return [];
+              }
+            })();
+
+            if (!userSnap.exists()) {
+              userSolved = Array.from(new Set(currentLocal));
+              await setDoc(userRef, {
+                uid: firebaseUser.uid,
+                displayName: firebaseUser.displayName,
+                email: firebaseUser.email,
+                photoURL: firebaseUser.photoURL,
+                createdAt: serverTimestamp(),
+                lastLogin: serverTimestamp(),
+                solvedProblems: userSolved,
+              });
+            } else {
+              const remoteSolved = userSnap.data()?.solvedProblems || [];
+              userSolved = Array.from(new Set([...remoteSolved, ...currentLocal]));
+              await setDoc(
+                userRef,
+                {
+                  lastLogin: serverTimestamp(),
+                  solvedProblems: userSolved,
+                },
+                { merge: true }
+              );
+            }
+          } catch (firestoreErr) {
+            console.warn('Firestore sync failed, continuing with local storage:', firestoreErr);
+            userSolved = (() => {
+              try {
+                return JSON.parse(localStorage.getItem('stsprac_solved') || '[]');
+              } catch {
+                return [];
+              }
+            })();
           }
-        })();
 
-        let userSolved = [];
+          // Keep local cache synced
+          try {
+            localStorage.setItem('stsprac_solved', JSON.stringify(userSolved));
+            setLocalSolved(userSolved);
+          } catch {}
 
-        if (!userSnap.exists()) {
-          userSolved = Array.from(new Set(currentLocal));
-          await setDoc(userRef, {
+          setUser({
             uid: firebaseUser.uid,
             displayName: firebaseUser.displayName,
             email: firebaseUser.email,
             photoURL: firebaseUser.photoURL,
-            createdAt: serverTimestamp(),
-            lastLogin: serverTimestamp(),
             solvedProblems: userSolved,
           });
         } else {
-          const remoteSolved = userSnap.data()?.solvedProblems || [];
-          // Merge local solves into cloud
-          userSolved = Array.from(new Set([...remoteSolved, ...currentLocal]));
-          await setDoc(
-            userRef,
-            {
-              lastLogin: serverTimestamp(),
-              solvedProblems: userSolved,
-            },
-            { merge: true }
-          );
+          setUser(null);
         }
-
-        // Keep local cache synced
-        try {
-          localStorage.setItem('stsprac_solved', JSON.stringify(userSolved));
-          setLocalSolved(userSolved);
-        } catch {}
-
-        setUser({
-          uid: firebaseUser.uid,
-          displayName: firebaseUser.displayName,
-          email: firebaseUser.email,
-          photoURL: firebaseUser.photoURL,
-          ...(userSnap.exists() ? userSnap.data() : {}),
-          solvedProblems: userSolved,
-        });
-      } else {
+      } catch (err) {
+        console.error('onAuthStateChanged error:', err);
         setUser(null);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     });
 
     return () => unsubscribe();

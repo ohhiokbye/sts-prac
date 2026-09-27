@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import ThemeToggle from './ThemeToggle';
 
 export default function Navbar() {
-  const { user, loginWithGoogle, logout } = useAuth();
+  const { user, logout } = useAuth();
   const location = useLocation();
 
   const isActive = (path) => location.pathname === path;
@@ -60,13 +60,13 @@ export default function Navbar() {
               </button>
             </>
           ) : (
-            <button
+            <Link
+              to="/login"
               className="btn btn--secondary btn--sm"
-              onClick={loginWithGoogle}
               id="nav-login"
             >
-              Sign in with Google
-            </button>
+              Sign in
+            </Link>
           )}
         </div>
       </div>

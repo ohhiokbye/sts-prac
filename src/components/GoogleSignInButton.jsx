@@ -21,11 +21,17 @@ function GoogleIcon() {
   );
 }
 
-export default function GoogleSignInButton({ onClick }) {
+export default function GoogleSignInButton({ onClick, disabled, loading }) {
   return (
-    <button className="btn btn--google btn--lg" onClick={onClick} id="google-signin-btn">
+    <button
+      className="btn btn--google btn--lg"
+      onClick={onClick}
+      disabled={disabled || loading}
+      id="google-signin-btn"
+      type="button"
+    >
       <GoogleIcon />
-      Continue with Google
+      {loading ? 'Signing in...' : 'Continue with Google'}
     </button>
   );
 }

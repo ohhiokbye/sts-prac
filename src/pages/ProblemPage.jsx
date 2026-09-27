@@ -10,12 +10,43 @@ export default function ProblemPage() {
   const { user, solvedProblems, markProblemSolved } = useAuth();
   const problem = getProblemById(id);
 
-  const [code, setCode] = useState(problem?.starterCode || '');
+  // Helper to load initially saved code
+  const getInitialCode = (problemId, fallback) => {
+    try {
+      const savedCode = localStorage.getItem(`stsprac_code_${problemId}`);
+      if (savedCode !== null && savedCode !== undefined) return savedCode;
+      const subRaw = localStorage.getItem(`stsprac_solution_${problemId}`);
+      if (subRaw) {
+        const sub = JSON.parse(subRaw);
+        if (sub?.code) return sub.code;
+      }
+    } catch {}
+    return fallback;
+  };
+
+  const [code, setCode] = useState(() => getInitialCode(id, problem?.starterCode || ''));
+  const [saveStatus, setSaveStatus] = useState(() => {
+    try {
+      const saved = localStorage.getItem(`stsprac_code_${id}`);
+      return saved ? 'saved' : 'idle';
+    } catch {
+      return 'idle';
+    }
+  });
+  const [savedSolution, setSavedSolution] = useState(() => {
+    try {
+      const raw = localStorage.getItem(`stsprac_solution_${id}`);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
+
   const [showSolution, setShowSolution] = useState(false);
   const isSolved = Boolean(solvedProblems?.includes(id));
 
   // Test cases & running state
-  const [activeTab, setActiveTab] = useState('testcase'); // 'testcase' | 'result'
+  const [activeTab, setActiveTab] = useState('testcase'); // 'testcase' | 'result' | 'saved_solution'
   const [runState, setRunState] = useState({
     status: 'idle', // 'idle' | 'running' | 'success' | 'wrong' | 'compile_error' | 'runtime_error' | 'time_limit' | 'error'
     runtime: '',
@@ -26,6 +57,33 @@ export default function ProblemPage() {
 
   // Just-in-time login modal state for saving progress
   const [showLoginModal, setShowLoginModal] = useState(false);
+
+  // Handle typing in editor
+  const handleCodeChange = useCallback((newVal) => {
+    setCode(newVal);
+    setSaveStatus('saving');
+  }, []);
+
+  // Debounced autosave to localStorage on code edit
+  useEffect(() => {
+    if (!problem) return;
+
+    const timer = setTimeout(() => {
+      try {
+        if (code === problem.starterCode) {
+          localStorage.removeItem(`stsprac_code_${id}`);
+          setSaveStatus('idle');
+        } else {
+          localStorage.setItem(`stsprac_code_${id}`, code);
+          setSaveStatus('saved');
+        }
+      } catch (err) {
+        console.warn('LocalStorage autosave error:', err);
+      }
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [code, id, problem]);
 
   // Reactive theme state initialized immediately from data-theme or storage
   const [isDark, setIsDark] = useState(() => {
@@ -51,6 +109,31 @@ export default function ProblemPage() {
     });
     return () => observer.disconnect();
   }, []);
+
+  const recordSolutionLocally = useCallback(
+    (codeToSave, runtimeStr) => {
+      try {
+        const solutionData = {
+          code: codeToSave,
+          savedAt: new Date().toLocaleDateString(undefined, {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+          runtime: runtimeStr || 'Accepted',
+        };
+        localStorage.setItem(`stsprac_solution_${id}`, JSON.stringify(solutionData));
+        setSavedSolution(solutionData);
+        localStorage.setItem(`stsprac_code_${id}`, codeToSave);
+        setSaveStatus('saved');
+      } catch (e) {
+        console.warn('Could not save solution to localStorage:', e);
+      }
+    },
+    [id]
+  );
 
   // Execute test runner with real Java compilation and execution via Judge0 CE API
   const executeRun = useCallback(async () => {
@@ -132,12 +215,13 @@ export default function ProblemPage() {
       const expectedOutput = (problem.expectedOutput || '').trim();
 
       if (actualOutput === expectedOutput) {
+        recordSolutionLocally(code, runtimeMs);
         setRunState({
           status: 'success',
           runtime: runtimeMs,
           userOutput: data.stdout || '',
           errorDetails: '',
-          message: 'All test cases passed successfully.',
+          message: 'All test cases passed successfully. Solution saved locally!',
         });
       } else {
         setRunState({
@@ -175,7 +259,7 @@ export default function ProblemPage() {
         });
       }
     }
-  }, [code, problem]);
+  }, [code, problem, recordSolutionLocally]);
 
   // Run code without requiring any login
   const handleRun = useCallback(() => {
@@ -198,6 +282,8 @@ export default function ProblemPage() {
       return;
     }
 
+    recordSolutionLocally(code, runState.runtime);
+
     if (!user) {
       // Prompt modal with Google cloud sync or guest save option
       setShowLoginModal(true);
@@ -209,31 +295,45 @@ export default function ProblemPage() {
       message: '✓ Marked as solved! Your progress has been synced to your account.',
     }));
     setActiveTab('result');
-  }, [user, id, markProblemSolved, runState.status]);
+  }, [user, id, markProblemSolved, runState.status, runState.runtime, code, recordSolutionLocally]);
 
   const handleGuestSolve = useCallback(async () => {
+    recordSolutionLocally(code, runState.runtime);
     await markProblemSolved(id);
     setRunState((prev) => ({
       ...prev,
       message: '✓ Marked as solved on this device. Sign in anytime to sync to the cloud.',
     }));
     setActiveTab('result');
-  }, [id, markProblemSolved]);
+  }, [id, markProblemSolved, code, runState.runtime, recordSolutionLocally]);
 
   const handleLoginSuccess = useCallback(async () => {
+    recordSolutionLocally(code, runState.runtime);
     await markProblemSolved(id);
     setRunState((prev) => ({
       ...prev,
       message: '✓ Marked as solved! Cloud synced with your Google account.',
     }));
     setActiveTab('result');
-  }, [id, markProblemSolved]);
+  }, [id, markProblemSolved, code, runState.runtime, recordSolutionLocally]);
 
   const handleReset = useCallback(() => {
     setCode(problem?.starterCode || '');
+    try {
+      localStorage.removeItem(`stsprac_code_${id}`);
+    } catch {}
+    setSaveStatus('idle');
     setRunState({ status: 'idle', runtime: '', userOutput: '', errorDetails: '', message: '' });
     setShowSolution(false);
-  }, [problem]);
+  }, [problem, id]);
+
+  const handleLoadSavedSolution = useCallback(() => {
+    if (savedSolution?.code) {
+      setCode(savedSolution.code);
+      setSaveStatus('saved');
+      setActiveTab('result');
+    }
+  }, [savedSolution]);
 
   if (!problem) {
     return (
@@ -360,12 +460,36 @@ export default function ProblemPage() {
           <div className="workspace__toolbar">
             <div className="workspace__toolbar-left">
               <span className="workspace__lang-badge">Java</span>
+              {saveStatus === 'saved' && (
+                <span
+                  className="workspace__save-status"
+                  title="Your code is automatically saved in your browser on this device"
+                >
+                  <span className="workspace__save-dot" /> Autosaved
+                </span>
+              )}
+              {saveStatus === 'saving' && (
+                <span className="workspace__save-status">
+                  <span className="workspace__save-dot workspace__save-dot--saving" /> Saving...
+                </span>
+              )}
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {savedSolution && code !== savedSolution.code && (
+                <button
+                  className="btn btn--ghost btn--sm"
+                  onClick={handleLoadSavedSolution}
+                  title={`Restore your saved solution from ${savedSolution.savedAt}`}
+                  id="btn-restore-solution"
+                >
+                  ↺ Load Saved Solution
+                </button>
+              )}
               <button
                 className="btn btn--ghost btn--sm"
                 onClick={handleReset}
                 id="btn-reset"
+                title="Reset code back to starter template"
               >
                 Reset
               </button>
@@ -406,7 +530,7 @@ export default function ProblemPage() {
               height="100%"
               defaultLanguage="java"
               value={code}
-              onChange={(value) => setCode(value || '')}
+              onChange={(value) => handleCodeChange(value || '')}
               beforeMount={(monaco) => {
                 monaco.editor.defineTheme('leetcode-dark', {
                   base: 'vs-dark',
@@ -469,6 +593,15 @@ export default function ProblemPage() {
                 >
                   Test Result {runState.status === 'success' ? '✓' : (runState.status === 'wrong' || runState.status === 'compile_error' || runState.status === 'runtime_error') ? '✕' : ''}
                 </button>
+                {savedSolution && (
+                  <button
+                    className={`workspace__testcase-tab ${activeTab === 'saved_solution' ? 'workspace__testcase-tab--active' : ''}`}
+                    onClick={() => setActiveTab('saved_solution')}
+                    id="tab-saved-solution"
+                  >
+                    My Solution 💾
+                  </button>
+                )}
               </div>
 
               {runState.status === 'running' && (
@@ -504,7 +637,48 @@ export default function ProblemPage() {
             </div>
 
             <div className="workspace__testcase-body">
-              {activeTab === 'testcase' ? (
+              {activeTab === 'saved_solution' && savedSolution && (
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                    <div>
+                      <span style={{ color: 'var(--success)', fontWeight: 600, fontSize: 'var(--text-xs)' }}>
+                        ✓ Saved in browser
+                      </span>
+                      <span style={{ marginLeft: 8, fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
+                        {savedSolution.savedAt} · {savedSolution.runtime}
+                      </span>
+                    </div>
+                    <button
+                      className="btn btn--secondary btn--sm"
+                      onClick={handleLoadSavedSolution}
+                      id="btn-load-saved-code"
+                    >
+                      Load into Editor ↺
+                    </button>
+                  </div>
+                  <div className="workspace__testcase-field">
+                    <pre
+                      style={{
+                        margin: 0,
+                        padding: '12px',
+                        background: 'var(--bg-primary)',
+                        border: '1px solid var(--border-default)',
+                        borderRadius: 'var(--radius-md)',
+                        fontSize: 'var(--text-xs)',
+                        fontFamily: 'var(--font-mono)',
+                        overflowX: 'auto',
+                        maxHeight: 220,
+                        color: 'var(--text-primary)',
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      <code>{savedSolution.code}</code>
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              {activeTab === 'testcase' && (
                 <div>
                   <div className="workspace__testcase-field">
                     <p className="workspace__testcase-label">Test Case 1 (Expected Output)</p>
@@ -516,7 +690,9 @@ export default function ProblemPage() {
                     Click &ldquo;Run Code&rdquo; to test your solution against this case.
                   </p>
                 </div>
-              ) : (
+              )}
+
+              {activeTab === 'result' && (
                 <div>
                   {runState.status === 'idle' && (
                     <p style={{ color: 'var(--text-tertiary)', fontSize: 'var(--text-xs)' }}>

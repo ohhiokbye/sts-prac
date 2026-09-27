@@ -649,6 +649,29 @@ code, pre {
   font-family: var(--font-mono);
 }
 
+.workspace__save-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  user-select: none;
+  transition: opacity var(--transition-fast);
+}
+
+.workspace__save-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--success);
+  display: inline-block;
+}
+
+.workspace__save-dot--saving {
+  background-color: var(--accent-primary);
+  animation: pulse 1s infinite;
+}
+
 /* ================================
    Problem Description
    ================================ */

@@ -1296,9 +1296,17 @@ code, pre {
 }
 
 .workspace__testcase-badge--success {
-  background: rgba(16, 185, 129, 0.14);
+  background: rgba(0, 184, 163, 0.14);
   color: var(--success);
-  border: 1px solid rgba(16, 185, 129, 0.3);
+  border: 1px solid rgba(0, 184, 163, 0.3);
+  animation: badgePop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.workspace__testcase-badge--error,
+.workspace__testcase-badge--wrong {
+  background: rgba(255, 55, 95, 0.14);
+  color: var(--error);
+  border: 1px solid rgba(255, 55, 95, 0.3);
   animation: badgePop 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -1308,9 +1316,9 @@ code, pre {
 }
 
 .workspace__testcase-badge--running {
-  background: rgba(245, 158, 11, 0.14);
+  background: rgba(255, 161, 22, 0.14);
   color: var(--accent-primary);
-  border: 1px solid rgba(245, 158, 11, 0.3);
+  border: 1px solid rgba(255, 161, 22, 0.3);
   animation: pulseBadge 1.2s infinite ease-in-out;
 }
 

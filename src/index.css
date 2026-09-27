@@ -590,6 +590,12 @@ code, pre {
 .workspace__editor {
   flex: 1;
   overflow: hidden;
+  background: #1a1a1a;
+  position: relative;
+}
+
+[data-theme="light"] .workspace__editor {
+  background: #ffffff;
 }
 
 .workspace__output {

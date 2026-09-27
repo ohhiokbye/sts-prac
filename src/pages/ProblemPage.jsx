@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import Editor from '@monaco-editor/react';
 import { useAuth } from '../context/AuthContext';
@@ -27,10 +27,30 @@ export default function ProblemPage() {
   // Just-in-time login modal state for saving progress
   const [showLoginModal, setShowLoginModal] = useState(false);
 
-  // Detect theme from document
-  const isDark =
-    typeof document !== 'undefined' &&
-    document.documentElement.getAttribute('data-theme') === 'dark';
+  // Reactive theme state initialized immediately from data-theme or storage
+  const [isDark, setIsDark] = useState(() => {
+    if (typeof document === 'undefined') return true;
+    const currentTheme = document.documentElement.getAttribute('data-theme');
+    if (currentTheme) return currentTheme === 'dark';
+    const saved = localStorage.getItem('stp-theme');
+    if (saved) return saved === 'dark';
+    return true; // default dark
+  });
+
+  useEffect(() => {
+    const checkTheme = () => {
+      const theme = document.documentElement.getAttribute('data-theme');
+      setIsDark(theme === 'dark');
+    };
+    checkTheme();
+
+    const observer = new MutationObserver(checkTheme);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    });
+    return () => observer.disconnect();
+  }, []);
 
   // Execute test runner with real Java compilation and execution via Judge0 CE API
   const executeRun = useCallback(async () => {
@@ -387,7 +407,35 @@ export default function ProblemPage() {
               defaultLanguage="java"
               value={code}
               onChange={(value) => setCode(value || '')}
-              theme={isDark ? 'vs-dark' : 'light'}
+              beforeMount={(monaco) => {
+                monaco.editor.defineTheme('leetcode-dark', {
+                  base: 'vs-dark',
+                  inherit: true,
+                  rules: [],
+                  colors: {
+                    'editor.background': '#1a1a1a',
+                    'editor.lineHighlightBackground': '#262626',
+                    'editorGutter.background': '#1a1a1a',
+                  },
+                });
+              }}
+              theme={isDark ? 'leetcode-dark' : 'light'}
+              loading={
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    height: '100%',
+                    background: isDark ? '#1a1a1a' : '#ffffff',
+                    color: 'var(--text-tertiary)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 'var(--text-xs)',
+                  }}
+                >
+                  Loading editor...
+                </div>
+              }
               options={{
                 fontSize: 14,
                 fontFamily: "'JetBrains Mono', 'Fira Code', monospace",

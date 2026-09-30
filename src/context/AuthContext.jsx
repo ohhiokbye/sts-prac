@@ -48,15 +48,20 @@ export function AuthProvider({ children }) {
               });
             } else {
               const remoteSolved = userSnap.data()?.solvedProblems || [];
+              const hasNewLocal = currentLocal.some((id) => !remoteSolved.includes(id));
               userSolved = Array.from(new Set([...remoteSolved, ...currentLocal]));
-              await setDoc(
-                userRef,
-                {
-                  lastLogin: serverTimestamp(),
-                  solvedProblems: userSolved,
-                },
-                { merge: true }
-              );
+
+              // Only issue a setDoc write if there is newly solved offline progress to merge
+              if (hasNewLocal) {
+                await setDoc(
+                  userRef,
+                  {
+                    lastLogin: serverTimestamp(),
+                    solvedProblems: userSolved,
+                  },
+                  { merge: true }
+                );
+              }
             }
           } catch (firestoreErr) {
             console.warn('Firestore sync failed, continuing with local storage:', firestoreErr);

@@ -1,14 +1,24 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import Editor from '@monaco-editor/react';
 import { useAuth } from '../context/AuthContext';
-import { getProblemById } from '../data/problems';
+import { getProblemById, getProblemTestCases } from '../data/problems';
 import LoginModal from '../components/LoginModal';
 
 export default function ProblemPage() {
   const { id } = useParams();
   const { user, solvedProblems, markProblemSolved } = useAuth();
   const problem = getProblemById(id);
+
+  // Load test cases and edge cases for this problem
+  const testCases = useMemo(() => getProblemTestCases(problem), [problem]);
+  const [selectedTestCaseIndex, setSelectedTestCaseIndex] = useState(0);
+
+  // Anti-spam cooldown timer (seconds remaining before user can run code again)
+  const [cooldown, setCooldown] = useState(0);
+
+  // Diagnostic recommendation when student is struggling with repeated failures
+  const [diagnostic, setDiagnostic] = useState(null);
 
   // Helper to load initially saved code
   const getInitialCode = (problemId, fallback) => {
@@ -110,6 +120,85 @@ export default function ProblemPage() {
     return () => observer.disconnect();
   }, []);
 
+  // Anti-spam cooldown timer countdown
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = setTimeout(() => {
+      setCooldown((c) => Math.max(0, c - 1));
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [cooldown]);
+
+  // Attempt telemetry and struggle detection
+  const recordAttemptTelemetry = useCallback(
+    (verdict, errorType = '', runtime = '') => {
+      try {
+        const key = `stsprac_telemetry_${id}`;
+        const raw = localStorage.getItem(key);
+        const existing = raw
+          ? JSON.parse(raw)
+          : {
+              problemId: id,
+              attemptsCount: 0,
+              consecutiveFailures: 0,
+              lastVerdict: '',
+              history: [],
+            };
+
+        existing.attemptsCount += 1;
+        if (verdict === 'success') {
+          existing.consecutiveFailures = 0;
+        } else {
+          existing.consecutiveFailures += 1;
+        }
+        existing.lastVerdict = verdict;
+        existing.history.push({
+          timestamp: Date.now(),
+          verdict,
+          errorType,
+          runtime,
+        });
+
+        // Keep last 10 entries to preserve storage
+        if (existing.history.length > 10) {
+          existing.history = existing.history.slice(-10);
+        }
+
+        localStorage.setItem(key, JSON.stringify(existing));
+
+        // Detect repeated struggle patterns (>= 3 attempts with failures)
+        if (existing.attemptsCount >= 3 && existing.consecutiveFailures >= 2) {
+          if (verdict === 'time_limit') {
+            setDiagnostic({
+              title: 'Performance Bottleneck',
+              tip: 'Your solution is timing out repeatedly. Check if your loop termination condition is met or consider optimizing nested loops.',
+            });
+          } else if (verdict === 'compile_error') {
+            setDiagnostic({
+              title: 'Compilation Hint',
+              tip: 'Check syntax carefully: missing semicolons, unmatched curly braces, or type mismatches.',
+            });
+          } else if (verdict === 'runtime_error') {
+            setDiagnostic({
+              title: 'Runtime Exception',
+              tip: 'Common causes include array out of bounds (off-by-one errors) or accessing null objects.',
+            });
+          } else if (verdict === 'wrong') {
+            setDiagnostic({
+              title: 'Logic / Output Mismatch',
+              tip: 'Compare your console print output with the Expected Output closely, including spaces and newlines.',
+            });
+          }
+        } else if (verdict === 'success') {
+          setDiagnostic(null);
+        }
+      } catch (e) {
+        console.warn('Telemetry storage warning:', e);
+      }
+    },
+    [id]
+  );
+
   const recordSolutionLocally = useCallback(
     (codeToSave, runtimeStr) => {
       try {
@@ -135,9 +224,44 @@ export default function ProblemPage() {
     [id]
   );
 
-  // Execute test runner with real Java compilation and execution via Judge0 CE API
+  // Execute test runner with pre-flight checks, 5s cooldown, and telemetry
   const executeRun = useCallback(async () => {
     if (!problem) return;
+
+    // Pre-flight check 0: Cooldown active or already running?
+    if (cooldown > 0 || runState.status === 'running') return;
+
+    // Pre-flight check 1: Starter code unchanged? Avoid wasting network API call
+    const cleanUserCode = code.replace(/\s+/g, ' ').trim();
+    const cleanStarter = (problem.starterCode || '').replace(/\s+/g, ' ').trim();
+    if (cleanUserCode === cleanStarter) {
+      setRunState({
+        status: 'wrong',
+        runtime: '0 ms',
+        userOutput: '(Starter code unchanged — main logic missing)',
+        errorDetails: '',
+        message: 'Starter code unchanged. Implement your logic inside main() before running.',
+      });
+      setActiveTab('result');
+      return;
+    }
+
+    // Pre-flight check 2: Missing main entry point?
+    if (!code.includes('public static void main')) {
+      setRunState({
+        status: 'compile_error',
+        runtime: '',
+        userOutput: '',
+        errorDetails: 'Missing entry point:\npublic static void main(String[] args)',
+        message: 'Entry Point Missing: Please include public static void main(String[] args) in your Main class.',
+      });
+      setActiveTab('result');
+      return;
+    }
+
+    // Set 5-second anti-spam cooldown lock
+    setCooldown(5);
+
     setRunState({
       status: 'running',
       runtime: '',
@@ -176,13 +300,18 @@ export default function ProblemPage() {
 
       // 1. Compilation Error
       if (statusId === 6 || (data.compile_output && !data.stdout)) {
+        const cleanError = (data.compile_output || '')
+          .replace(/\/sandbox\d*\/Main\.java:/g, 'Line ')
+          .replace(/\/tmp\/[a-zA-Z0-9_\-/]+\.java:/g, 'Line ');
+
         setRunState({
           status: 'compile_error',
           runtime: '',
           userOutput: '',
-          errorDetails: data.compile_output || 'Compilation failed. Check your syntax and class structure.',
+          errorDetails: cleanError || 'Compilation failed. Check your syntax and class structure.',
           message: 'Compilation Error: Code could not be compiled.',
         });
+        recordAttemptTelemetry('compile_error', 'javac');
         return;
       }
 
@@ -195,6 +324,7 @@ export default function ProblemPage() {
           errorDetails: data.stderr || data.message || 'A runtime exception occurred during execution.',
           message: 'Runtime Error: Exception occurred while running.',
         });
+        recordAttemptTelemetry('runtime_error', data.stderr || 'Exception');
         return;
       }
 
@@ -204,9 +334,10 @@ export default function ProblemPage() {
           status: 'time_limit',
           runtime: '> 5.0 s',
           userOutput: data.stdout || '',
-          errorDetails: 'Your solution timed out. Ensure there are no infinite loops or recursion issues.',
+          errorDetails: 'Your solution timed out (> 5.0 seconds). Ensure there are no infinite loops or recursion issues.',
           message: 'Time Limit Exceeded.',
         });
+        recordAttemptTelemetry('time_limit', 'TLE');
         return;
       }
 
@@ -216,6 +347,7 @@ export default function ProblemPage() {
 
       if (actualOutput === expectedOutput) {
         recordSolutionLocally(code, runtimeMs);
+        recordAttemptTelemetry('success', '', runtimeMs);
         setRunState({
           status: 'success',
           runtime: runtimeMs,
@@ -224,42 +356,35 @@ export default function ProblemPage() {
           message: 'All test cases passed successfully. Solution saved locally!',
         });
       } else {
+        const isWhitespaceOnly =
+          actualOutput.replace(/\s+/g, ' ') === expectedOutput.replace(/\s+/g, ' ');
+
+        recordAttemptTelemetry('wrong', isWhitespaceOnly ? 'Whitespace' : 'Mismatch', runtimeMs);
         setRunState({
           status: 'wrong',
           runtime: runtimeMs,
-          userOutput: data.stdout !== null && data.stdout !== undefined && data.stdout !== ''
-            ? data.stdout
-            : '(No output printed to console)',
+          userOutput:
+            data.stdout !== null && data.stdout !== undefined && data.stdout !== ''
+              ? data.stdout
+              : '(No output printed to console)',
           errorDetails: '',
-          message: 'Wrong Answer: Your output does not match the expected test case output.',
+          message: isWhitespaceOnly
+            ? 'Wrong Answer: Characters match, but trailing space/newline differs.'
+            : 'Wrong Answer: Your output does not match the expected test case output.',
         });
       }
     } catch (err) {
       console.error('Execution error:', err);
-
-      // Check if starter code was unchanged
-      const cleanUserCode = code.replace(/\s+/g, ' ').trim();
-      const cleanStarter = (problem.starterCode || '').replace(/\s+/g, ' ').trim();
-
-      if (cleanUserCode === cleanStarter) {
-        setRunState({
-          status: 'wrong',
-          runtime: '0 ms',
-          userOutput: '(Starter code unchanged — main logic missing)',
-          errorDetails: '',
-          message: 'Please implement your solution inside Main before running.',
-        });
-      } else {
-        setRunState({
-          status: 'error',
-          runtime: '',
-          userOutput: '',
-          errorDetails: err.message || 'Could not connect to code execution server.',
-          message: 'Unable to connect to the Java compiler. Check your internet connection.',
-        });
-      }
+      recordAttemptTelemetry('error', err.message || 'Network');
+      setRunState({
+        status: 'error',
+        runtime: '',
+        userOutput: '',
+        errorDetails: err.message || 'Could not connect to code execution server.',
+        message: 'Unable to connect to the Java compiler. Check your internet connection.',
+      });
     }
-  }, [code, problem, recordSolutionLocally]);
+  }, [code, problem, cooldown, runState.status, recordSolutionLocally, recordAttemptTelemetry]);
 
   // Run code without requiring any login
   const handleRun = useCallback(() => {
@@ -363,8 +488,21 @@ export default function ProblemPage() {
           </div>
 
           <header className="problem-desc__header">
-            <p className="problem-desc__number">Problem {problem.number}</p>
-            <h1 className="problem-desc__title">{problem.title}</h1>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
+              <div>
+                <p className="problem-desc__number">Problem {problem.number}</p>
+                <h1 className="problem-desc__title">{problem.title}</h1>
+              </div>
+              <button
+                className={`btn ${showSolution ? 'btn--secondary' : 'btn--ghost'} btn--sm`}
+                onClick={() => setShowSolution(!showSolution)}
+                id="toggle-solution"
+                style={{ flexShrink: 0, marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 6 }}
+                title={showSolution ? 'Hide Reference Solution' : 'View Reference Solution'}
+              >
+                <span>💡</span> {showSolution ? 'Hide Solution' : 'Solution'}
+              </button>
+            </div>
             <div className="problem-desc__meta">
               {problem.exam && (
                 <span
@@ -392,6 +530,47 @@ export default function ProblemPage() {
               )}
             </div>
           </header>
+
+          {/* Reference Solution view located above the description */}
+          {showSolution && (
+            <div
+              className="solution-preview"
+              style={{
+                margin: '16px 0',
+                padding: '16px',
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border-focus)',
+                borderRadius: 'var(--radius-lg)',
+                boxShadow: 'var(--shadow-sm)',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <span
+                  style={{
+                    fontSize: 'var(--text-xs)',
+                    fontWeight: 700,
+                    color: 'var(--brand-primary)',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.05em',
+                  }}
+                >
+                  Reference Solution (Java)
+                </span>
+                <button
+                  className="btn btn--ghost btn--xs"
+                  onClick={() => {
+                    navigator.clipboard.writeText(problem.solution);
+                  }}
+                  title="Copy reference solution"
+                >
+                  Copy Code
+                </button>
+              </div>
+              <pre style={{ margin: 0, maxHeight: 320, overflowY: 'auto', background: 'var(--bg-primary)' }}>
+                <code>{problem.solution}</code>
+              </pre>
+            </div>
+          )}
 
           <div className="problem-desc__body">
             {/* Render description as simple sections */}
@@ -437,22 +616,6 @@ export default function ProblemPage() {
               <code>{problem.expectedOutput}</code>
             </pre>
           </div>
-
-          {/* Solution toggle */}
-          <div style={{ marginTop: 24, marginBottom: 24 }}>
-            <button
-              className="btn btn--secondary btn--sm"
-              onClick={() => setShowSolution(!showSolution)}
-              id="toggle-solution"
-            >
-              {showSolution ? 'Hide Solution' : 'Show Solution'}
-            </button>
-            {showSolution && (
-              <pre style={{ marginTop: 12 }}>
-                <code>{problem.solution}</code>
-              </pre>
-            )}
-          </div>
         </section>
 
         {/* Right panel — editor + test cases */}
@@ -496,9 +659,19 @@ export default function ProblemPage() {
               <button
                 className="btn btn--secondary btn--sm"
                 onClick={handleRun}
+                disabled={runState.status === 'running' || cooldown > 0}
                 id="btn-run"
+                style={{
+                  opacity: runState.status === 'running' || cooldown > 0 ? 0.7 : 1,
+                  cursor: runState.status === 'running' || cooldown > 0 ? 'not-allowed' : 'pointer',
+                  minWidth: 96,
+                }}
               >
-                ▶ Run Code
+                {runState.status === 'running'
+                  ? 'Compiling...'
+                  : cooldown > 0
+                  ? `Wait ${cooldown}s`
+                  : '▶ Run Code'}
               </button>
               {!isSolved ? (
                 <button
@@ -680,15 +853,49 @@ export default function ProblemPage() {
 
               {activeTab === 'testcase' && (
                 <div>
+                  {/* Selectable Test Cases */}
+                  {testCases.length > 1 && (
+                    <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+                      {testCases.map((tc, idx) => (
+                        <button
+                          key={tc.id || idx}
+                          className={`btn btn--xs ${selectedTestCaseIndex === idx ? 'btn--secondary' : 'btn--ghost'}`}
+                          onClick={() => setSelectedTestCaseIndex(idx)}
+                          id={`btn-case-${idx + 1}`}
+                          style={{
+                            borderRadius: 'var(--radius-full)',
+                            padding: '4px 14px',
+                            fontSize: 'var(--text-xs)',
+                            fontWeight: 600,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            borderColor: selectedTestCaseIndex === idx ? 'var(--border-focus)' : 'var(--border-default)',
+                            background: selectedTestCaseIndex === idx ? 'var(--bg-tertiary)' : 'transparent',
+                            color: selectedTestCaseIndex === idx ? 'var(--text-primary)' : 'var(--text-secondary)',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {tc.label || `Case ${idx + 1}`}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {testCases[selectedTestCaseIndex]?.input && (
+                    <div className="workspace__testcase-field">
+                      <p className="workspace__testcase-label">Input</p>
+                      <div className="workspace__testcase-value">
+                        {testCases[selectedTestCaseIndex].input}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="workspace__testcase-field">
-                    <p className="workspace__testcase-label">Test Case 1 (Expected Output)</p>
+                    <p className="workspace__testcase-label">Expected Output</p>
                     <div className="workspace__testcase-value">
-                      {problem.expectedOutput}
+                      {testCases[selectedTestCaseIndex]?.expectedOutput || problem.expectedOutput}
                     </div>
                   </div>
-                  <p style={{ marginTop: 10, fontSize: 'var(--text-xs)', color: 'var(--text-tertiary)' }}>
-                    Click &ldquo;Run Code&rdquo; to test your solution against this case.
-                  </p>
                 </div>
               )}
 
@@ -827,6 +1034,32 @@ export default function ProblemPage() {
                           </div>
                         </div>
                       )}
+                    </div>
+                  )}
+
+                  {/* Struggle Diagnostic Alert */}
+                  {diagnostic && (
+                    <div
+                      style={{
+                        marginTop: 14,
+                        padding: '10px 14px',
+                        background: 'rgba(255, 161, 22, 0.08)',
+                        border: '1px solid rgba(255, 161, 22, 0.3)',
+                        borderRadius: 'var(--radius-md)',
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: 10,
+                      }}
+                    >
+                      <span style={{ fontSize: '16px' }}>💡</span>
+                      <div>
+                        <p style={{ margin: 0, fontSize: 'var(--text-xs)', fontWeight: 700, color: 'var(--accent-primary)' }}>
+                          {diagnostic.title}
+                        </p>
+                        <p style={{ margin: '2px 0 0', fontSize: 'var(--text-xs)', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                          {diagnostic.tip}
+                        </p>
+                      </div>
                     </div>
                   )}
                 </div>
